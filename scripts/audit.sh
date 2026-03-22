@@ -126,10 +126,12 @@ post_with_retry() {
       "-H" "Content-Type: application/json"
     )
 
-    # Send hash headers for fast-path cache lookup (ADR-006)
+    # Send hash header for fast-path cache lookup (ADR-006)
+    # NOTE: We do NOT send If-None-Match because CI has no local cache —
+    # a 304 would leave us with no audit data. The server returns 200 with
+    # cached body when X-Manifest-Hash matches KV.
     if [[ "$STRATEGY" == "cache-first" && -n "$manifest_hash" ]]; then
       curl_args+=("-H" "X-Manifest-Hash: $manifest_hash")
-      curl_args+=("-H" "If-None-Match: \"$manifest_hash\"")
     fi
 
     local response
@@ -169,10 +171,9 @@ post_with_retry() {
       echo "__SKIP__"
       return 0
     elif [[ "$status" == "401" ]]; then
-      echo "::error::Authentication failed (401)"
+      echo "::error::Authentication failed (401). Check your API key or OIDC configuration."
       echo "$body" | jq . 2>/dev/null || echo "$body"
-      echo "__SKIP__"
-      return 0
+      return 1
     else
       echo "::error::API error ($status)"
       echo "$body" | jq . 2>/dev/null || echo "$body"
@@ -223,13 +224,7 @@ while IFS= read -r FILE; do
   POST_RESULT=$(post_with_retry "$POST_BODY" "$HASH") || POST_EXIT=$?
   POST_EXIT=${POST_EXIT:-0}
 
-  if [[ "$POST_RESULT" == "__304__" ]]; then
-    echo "✅ ETag match — manifest unchanged (\$0 cost)"
-    MARKDOWN_REPORT+=$'\n'"**$FILE** — unchanged (cache hit)"
-    COST_CACHE_HITS=$((COST_CACHE_HITS + 1))
-    echo "::endgroup::"
-    continue
-  elif [[ "$POST_RESULT" == "__SKIP__" ]]; then
+  if [[ "$POST_RESULT" == "__SKIP__" ]]; then
     echo "::endgroup::"
     continue
   fi
