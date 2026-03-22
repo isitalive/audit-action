@@ -250,13 +250,14 @@ while IFS= read -r FILE; do
   TOTAL=$(echo "$RESULT" | jq -r '.total // 0')
   PENDING=$(echo "$RESULT" | jq -r '.pending // 0')
   AVG_SCORE=$(echo "$RESULT" | jq -r '.summary.avgScore // 0')
-  # Only count deps toward quota if this manifest was actually scored (POST).
-  # Cache hits consumed 0 quota — the deps in the result are from a prior run.
+  FRESHLY_SCORED=$(echo "$RESULT" | jq -r '.freshlyScored // 0')
+  # Only freshly scored deps consume quota (see ADR-004).
+  # On a CDN cache hit the whole response is from a prior run — 0 quota.
   if [[ "$SOURCE" != "cdn-hit" ]]; then
-    COST_DEPS_SCORED=$((COST_DEPS_SCORED + SCORED))
+    COST_DEPS_SCORED=$((COST_DEPS_SCORED + FRESHLY_SCORED))
   fi
 
-  # Build dependency table
+  # Build dependency table (include cache status indicator)
   DEP_TABLE=$(echo "$RESULT" | jq -r '
     .dependencies[]
     | select(.score != null)
@@ -267,8 +268,13 @@ while IFS= read -r FILE; do
         elif .score >= 20 then "🔴 critical"
         else "💀 unmaintained"
         end
+      ) | \(
+        if .cacheStatus == "fresh" then "🆕"
+        elif .cacheStatus == "cached" then "💾"
+        else "—"
+        end
       ) | [\(.github // "—")](https://isitalive.dev/github/\(.github // "")) |"
-  ' 2>/dev/null || echo "| (no scored deps) | — | — | — |")
+  ' 2>/dev/null || echo "| (no scored deps) | — | — | — | — |")
 
   # Show pending deps if any
   PENDING_NOTE=""
@@ -276,10 +282,10 @@ while IFS= read -r FILE; do
     PENDING_NOTE=$'\n'"*⏳ ${PENDING} dependencies still computing — results may update on next run.*"$'\n'
   fi
 
-  FILE_REPORT="### \`$FILE\` (avg: ${AVG_SCORE}, ${SCORED}/${TOTAL} scored, source: ${SOURCE})
+  FILE_REPORT="### \`$FILE\` (avg: ${AVG_SCORE}, ${SCORED}/${TOTAL} scored, ${FRESHLY_SCORED} fresh, source: ${SOURCE})
 
-| Dependency | Score | Verdict | Details |
-|-----------|-------|---------|---------
+| Dependency | Score | Verdict | Quota | Details |
+|-----------|-------|---------|-------|---------
 ${DEP_TABLE}
 ${PENDING_NOTE}"
   MARKDOWN_REPORT+=$'\n'"$FILE_REPORT"
