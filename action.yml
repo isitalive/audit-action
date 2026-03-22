@@ -1,0 +1,54 @@
+name: 'IsItAlive — Dependency Health Audit'
+description: 'Audit your dependencies for health, activity, and maintenance status. Get actionable reports on every PR.'
+author: 'IsItAlive'
+
+branding:
+  icon: 'shield'
+  color: 'green'
+
+inputs:
+  fail-threshold:
+    description: 'Fail the check if any dependency scores below this value (0-100). Set to 0 to never fail.'
+    required: false
+    default: '0'
+  files:
+    description: |
+      Newline-separated list of manifest files to audit.
+      Defaults to auto-detecting package.json and go.mod in the repo root.
+    required: false
+    default: ''
+  api-key:
+    description: 'IsItAlive API key (required for private repos, optional for public repos using OIDC).'
+    required: false
+    default: ''
+  api-url:
+    description: 'IsItAlive API base URL (override for testing).'
+    required: false
+    default: 'https://isitalive.dev'
+  strategy:
+    description: |
+      Caching strategy:
+        cache-first: try GET (CDN), then POST on miss (cheapest, default)
+        fresh: always POST, skip GET cache (uses quota but gets tier-fresh data)
+    required: false
+    default: 'cache-first'
+
+outputs:
+  summary:
+    description: 'Markdown summary of the audit results'
+  any-below-threshold:
+    description: 'Whether any dependency scored below the fail threshold (true/false)'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Audit dependencies
+      shell: bash
+      env:
+        INPUT_FAIL_THRESHOLD: ${{ inputs.fail-threshold }}
+        INPUT_FILES: ${{ inputs.files }}
+        INPUT_API_KEY: ${{ inputs.api-key }}
+        INPUT_API_URL: ${{ inputs.api-url }}
+        INPUT_STRATEGY: ${{ inputs.strategy }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: bash ${{ github.action_path }}/scripts/audit.sh
