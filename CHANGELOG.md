@@ -8,13 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
-- **POST-only manifest flow** (ADR-006) — removed `GET /api/manifest/hash/:hash` CDN lookup; POST now sends `X-Manifest-Hash` and `If-None-Match` headers for fast-path cache lookup in a single request
+- **POST-only manifest flow** (ADR-006) — removed `GET /api/manifest/hash/:hash` CDN lookup; POST now sends `X-Manifest-Hash` header for fast-path cache lookup in a single request
 - Worker checks KV cache before parsing JSON body — cache hits return in <1ms CPU
-- Added 401 error handling — graceful message when OIDC is used on private repos
+- **401 = hard failure** — authentication errors now exit with code 1, failing the CI action instead of silently skipping
+- README updated: documents POST-only flow, corrected `cost-summary` output field names, notes 401 as hard error
 
 ### Removed
 
 - GET-first CDN cache pattern — Workers always invoke (~$0.30/M), making the GET a redundant round-trip at the same cost
+- `If-None-Match` / 304 handling — CI has no local cache to serve on 304; server returns 200 with cached body via `X-Manifest-Hash` instead
 
 ## [0.2.0] - 2026-03-21
 
