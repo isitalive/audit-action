@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.3.0] - 2026-03-22
+
+### Changed
+
+- **POST-only manifest flow** (ADR-006) — removed `GET /api/manifest/hash/:hash` CDN lookup; POST now sends `X-Manifest-Hash` and `If-None-Match` headers for fast-path cache lookup in a single request
+- Worker checks KV cache before parsing JSON body — cache hits return in <1ms CPU
+- Added 401 error handling — graceful message when OIDC is used on private repos
+
+### Removed
+
+- GET-first CDN cache pattern — Workers always invoke (~$0.30/M), making the GET a redundant round-trip at the same cost
+
 ## [0.2.0] - 2026-03-21
 
 ### Added
