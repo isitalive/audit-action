@@ -3,8 +3,9 @@
 # IsItAlive Audit Action — main script
 #
 # Audits manifest files (package.json, go.mod) for dependency health.
-# Uses a GET-first pattern for CDN-cached results ($0), falling back to
-# authenticated POST on cache miss. Retries incomplete results automatically.
+# Sends POST with X-Manifest-Hash header for fast-path cache lookup (ADR-006).
+# Worker checks KV before parsing body — cache hits return in <1ms CPU.
+# Retries incomplete results automatically.
 #
 # Env vars (set by action.yml):
 #   INPUT_FAIL_THRESHOLD  — score threshold (0 = never fail)
@@ -29,8 +30,8 @@ RETRY_DELAY="${INPUT_RETRY_DELAY:-5}"
 ANY_BELOW_THRESHOLD="false"
 
 # Quota tracking (see ADR-004: billable unit = "dependency scored")
-COST_CACHE_HITS=0         # manifests served from cache (CDN/KV) — 0 quota
-COST_MANIFESTS_SCORED=0   # manifests that triggered scoring via POST
+COST_CACHE_HITS=0         # manifests served from cache (Worker KV/L1) — 0 quota
+COST_MANIFESTS_SCORED=0   # manifests that triggered scoring
 COST_MANIFESTS_PARTIAL=0  # manifests still incomplete after retries
 COST_DEPS_SCORED=0        # total deps returned with a score (cache + fresh)
 
@@ -112,17 +113,29 @@ detect_format() {
 
 post_with_retry() {
   local post_body="$1"
+  local manifest_hash="${2:-}"  # Optional X-Manifest-Hash for fast-path (ADR-006)
   local attempt=0
   local result=""
   local complete=""
 
   while true; do
+    local curl_args=(
+      "-sS" "-w" "\n%{http_code}"
+      "-X" "POST" "${API_URL}/api/manifest"
+      "-H" "Authorization: Bearer ${AUTH_TOKEN}"
+      "-H" "Content-Type: application/json"
+    )
+
+    # Send hash header for fast-path cache lookup (ADR-006)
+    # NOTE: We do NOT send If-None-Match because CI has no local cache —
+    # a 304 would leave us with no audit data. The server returns 200 with
+    # cached body when X-Manifest-Hash matches KV.
+    if [[ "$STRATEGY" == "cache-first" && -n "$manifest_hash" ]]; then
+      curl_args+=("-H" "X-Manifest-Hash: $manifest_hash")
+    fi
+
     local response
-    response=$(curl -sS -w "\n%{http_code}" \
-      -X POST "${API_URL}/api/manifest" \
-      -H "Authorization: Bearer ${AUTH_TOKEN}" \
-      -H "Content-Type: application/json" \
-      -d "$post_body" 2>/dev/null || true)
+    response=$(curl "${curl_args[@]}" -d "$post_body" 2>/dev/null || true)
     local status
     status=$(echo "$response" | tail -1)
     local body
@@ -149,7 +162,7 @@ post_with_retry() {
       sleep "$wait_seconds"
 
     elif [[ "$status" == "304" ]]; then
-      # ETag match — signal with empty result + special exit
+      # ETag match — manifest unchanged, no scoring needed
       echo "__304__"
       return 0
     elif [[ "$status" == "429" ]]; then
@@ -157,6 +170,10 @@ post_with_retry() {
       echo "$body" | jq . 2>/dev/null || echo "$body"
       echo "__SKIP__"
       return 0
+    elif [[ "$status" == "401" ]]; then
+      echo "::error::Authentication failed (401). Check your API key or OIDC configuration."
+      echo "$body" | jq . 2>/dev/null || echo "$body"
+      return 1
     else
       echo "::error::API error ($status)"
       echo "$body" | jq . 2>/dev/null || echo "$body"
@@ -195,54 +212,32 @@ while IFS= read -r FILE; do
   RESULT=""
   SOURCE=""
 
-  # ── Strategy: cache-first → try GET, then POST ──────────────────────
-  if [[ "$STRATEGY" == "cache-first" ]]; then
-    GET_RESPONSE=$(curl -sS -w "\n%{http_code}" \
-      "${API_URL}/api/manifest/hash/${HASH}" 2>/dev/null || true)
-    GET_STATUS=$(echo "$GET_RESPONSE" | tail -1)
-    GET_BODY=$(echo "$GET_RESPONSE" | sed '$d')
-
-    if [[ "$GET_STATUS" == "200" ]]; then
-      echo "✅ CDN cache hit — \$0 cost"
-      RESULT="$GET_BODY"
-      SOURCE="cdn-hit"
-      COST_CACHE_HITS=$((COST_CACHE_HITS + 1))
-    fi
+  # ── POST with hash headers for fast-path cache lookup (ADR-006) ───────
+  if [[ -z "$AUTH_TOKEN" ]]; then
+    echo "::error::Authentication required for POST /api/manifest. Set 'api-key' input or enable OIDC with 'permissions: id-token: write'."
+    exit 1
   fi
 
-  # ── POST (on cache miss or 'fresh' strategy) ────────────────────────
-  if [[ -z "$RESULT" ]]; then
-    if [[ -z "$AUTH_TOKEN" ]]; then
-      echo "::error::Authentication required for POST /api/manifest. Set 'api-key' input or enable OIDC with 'permissions: id-token: write'."
-      exit 1
-    fi
+  POST_BODY=$(jq -nc --arg format "$FORMAT" --arg content "$CONTENT" \
+    '{format: $format, content: $content}')
 
-    POST_BODY=$(jq -nc --arg format "$FORMAT" --arg content "$CONTENT" \
-      '{format: $format, content: $content}')
+  POST_RESULT=$(post_with_retry "$POST_BODY" "$HASH") || POST_EXIT=$?
+  POST_EXIT=${POST_EXIT:-0}
 
-    POST_RESULT=$(post_with_retry "$POST_BODY") || POST_EXIT=$?
-    POST_EXIT=${POST_EXIT:-0}
+  if [[ "$POST_RESULT" == "__SKIP__" ]]; then
+    echo "::endgroup::"
+    continue
+  fi
 
-    if [[ "$POST_RESULT" == "__304__" ]]; then
-      echo "✅ ETag match — manifest unchanged"
-      MARKDOWN_REPORT+=$'\n'"**$FILE** — unchanged (ETag match)"
-      echo "::endgroup::"
-      continue
-    elif [[ "$POST_RESULT" == "__SKIP__" ]]; then
-      echo "::endgroup::"
-      continue
-    fi
-
-    RESULT="$POST_RESULT"
-    if [[ "$POST_EXIT" -eq 2 ]]; then
-      SOURCE="partial"
-      COST_MANIFESTS_PARTIAL=$((COST_MANIFESTS_PARTIAL + 1))
-      echo "⚠️ Partial result after ${MAX_RETRIES} retries"
-    else
-      SOURCE="scored"
-      COST_MANIFESTS_SCORED=$((COST_MANIFESTS_SCORED + 1))
-      echo "📊 Scored via API"
-    fi
+  RESULT="$POST_RESULT"
+  if [[ "$POST_EXIT" -eq 2 ]]; then
+    SOURCE="partial"
+    COST_MANIFESTS_PARTIAL=$((COST_MANIFESTS_PARTIAL + 1))
+    echo "⚠️ Partial result after ${MAX_RETRIES} retries"
+  else
+    SOURCE="scored"
+    COST_MANIFESTS_SCORED=$((COST_MANIFESTS_SCORED + 1))
+    echo "📊 Scored via API"
   fi
 
   # ── Parse results and build report ──────────────────────────────────
@@ -252,10 +247,7 @@ while IFS= read -r FILE; do
   AVG_SCORE=$(echo "$RESULT" | jq -r '.summary.avgScore // 0')
   FRESHLY_SCORED=$(echo "$RESULT" | jq -r '.freshlyScored // 0')
   # Only freshly scored deps consume quota (see ADR-004).
-  # On a CDN cache hit the whole response is from a prior run — 0 quota.
-  if [[ "$SOURCE" != "cdn-hit" ]]; then
-    COST_DEPS_SCORED=$((COST_DEPS_SCORED + FRESHLY_SCORED))
-  fi
+  COST_DEPS_SCORED=$((COST_DEPS_SCORED + FRESHLY_SCORED))
 
   # Build dependency table (include cache status indicator)
   DEP_TABLE=$(echo "$RESULT" | jq -r '

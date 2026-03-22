@@ -65,23 +65,23 @@ jobs:
 |--------|-------------|
 | `summary` | Markdown summary of audit results |
 | `any-below-threshold` | `true` if any dep scored below threshold |
-| `cost-summary` | JSON object: `{cdn_hits, api_posts, api_partial, total_deps_scored}` |
+| `cost-summary` | JSON object: `{cache_hits, manifests_scored, manifests_partial, deps_scored}` |
 
 ## How It Works
 
 1. **Hashes** each manifest file locally (SHA-256)
-2. **Tries GET** `/api/manifest/hash/{hash}` — served from CDN edge ($0 on hit)
-3. **On 404** — POSTs the manifest to `/api/manifest` for scoring (auth required)
+2. **POSTs** to `/api/manifest` with `X-Manifest-Hash` header — the server checks its cache before parsing the body (<1ms CPU on cache hits)
+3. **On cache miss** — server parses and scores the manifest, returning results with an ETag
 4. **Posts/updates** a PR comment with the health report
 5. **Fails** the check if any dependency scores below the configured threshold
 
-The GET-first pattern means if the same manifest was scored before (by anyone, globally), you get an instant CDN-cached result at zero cost.
+The `X-Manifest-Hash` header lets the server skip body parsing on cache hits, keeping Worker CPU usage minimal. Auth failures (401) are treated as hard errors.
 
 ## Caching Strategy
 
 | Strategy | Behavior | Cost | Freshness |
 |----------|----------|------|-----------|
-| `cache-first` (default) | GET cache → POST on miss | Lowest | Up to 7 days |
+| `cache-first` (default) | POST with hash header → server checks cache | Lowest | Up to 7 days |
 | `fresh` | Always POST, skip cache | Uses quota | Tier-based (1h for free) |
 
 ## Requirements
