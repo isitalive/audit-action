@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.2.0] - 2026-03-21
+
+### Added
+
+- **Retry logic** for incomplete API responses — when not all deps fit in the Worker time budget, the action now retries automatically (configurable via `max-retries` and `retry-delay` inputs)
+- **Cost summary** in PR comments and step summary — shows CDN cache hits ($0) vs API calls (quota) and total deps scored
+- New `cost-summary` output — JSON object with `cdn_hits`, `api_posts`, `api_partial`, `total_deps_scored`
+- New `max-retries` input (default: `3`) — max retries for incomplete results
+- New `retry-delay` input (default: `5`) — seconds between retries (overridden by server `Retry-After` header)
+
 ## [0.1.0] - 2026-03-21
 
 ### Added

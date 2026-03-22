@@ -56,6 +56,8 @@ jobs:
 | `files` | No | auto-detect | Newline-separated list of manifest files |
 | `api-key` | No | — | API key (required for private repos) |
 | `strategy` | No | `cache-first` | `cache-first` or `fresh` |
+| `max-retries` | No | `3` | Max retries for incomplete results (some deps still computing) |
+| `retry-delay` | No | `5` | Seconds between retries (overridden by server `Retry-After`) |
 
 ## Outputs
 
@@ -63,6 +65,7 @@ jobs:
 |--------|-------------|
 | `summary` | Markdown summary of audit results |
 | `any-below-threshold` | `true` if any dep scored below threshold |
+| `cost-summary` | JSON object: `{cdn_hits, api_posts, api_partial, total_deps_scored}` |
 
 ## How It Works
 

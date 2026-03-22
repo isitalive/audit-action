@@ -32,12 +32,22 @@ inputs:
         fresh: always POST, skip GET cache (uses quota but gets tier-fresh data)
     required: false
     default: 'cache-first'
+  max-retries:
+    description: 'Max retries when the API returns an incomplete result (some deps still computing). Set to 0 to disable.'
+    required: false
+    default: '3'
+  retry-delay:
+    description: 'Seconds to wait between retries (overridden by Retry-After header from server).'
+    required: false
+    default: '5'
 
 outputs:
   summary:
     description: 'Markdown summary of the audit results'
   any-below-threshold:
     description: 'Whether any dependency scored below the fail threshold (true/false)'
+  cost-summary:
+    description: 'JSON cost summary: {cdn_hits, api_posts, api_partial, total_deps_scored}'
 
 runs:
   using: 'composite'
@@ -50,5 +60,7 @@ runs:
         INPUT_API_KEY: ${{ inputs.api-key }}
         INPUT_API_URL: ${{ inputs.api-url }}
         INPUT_STRATEGY: ${{ inputs.strategy }}
+        INPUT_MAX_RETRIES: ${{ inputs.max-retries }}
+        INPUT_RETRY_DELAY: ${{ inputs.retry-delay }}
         GITHUB_TOKEN: ${{ github.token }}
       run: bash ${{ github.action_path }}/scripts/audit.sh
