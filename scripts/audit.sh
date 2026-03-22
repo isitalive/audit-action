@@ -28,11 +28,11 @@ MAX_RETRIES="${INPUT_MAX_RETRIES:-3}"
 RETRY_DELAY="${INPUT_RETRY_DELAY:-5}"
 ANY_BELOW_THRESHOLD="false"
 
-# Cost tracking
-COST_CDN_HITS=0
-COST_API_POSTS=0
-COST_API_PARTIAL=0
-COST_TOTAL_DEPS_SCORED=0
+# Quota tracking (see ADR-004: billable unit = "dependency scored")
+COST_CACHE_HITS=0         # manifests served from cache (CDN/KV) — 0 quota
+COST_MANIFESTS_SCORED=0   # manifests that triggered scoring via POST
+COST_MANIFESTS_PARTIAL=0  # manifests still incomplete after retries
+COST_DEPS_SCORED=0        # total deps returned with a score (cache + fresh)
 
 # ---------------------------------------------------------------------------
 # Auth — OIDC token or API key
@@ -206,7 +206,7 @@ while IFS= read -r FILE; do
       echo "✅ CDN cache hit — \$0 cost"
       RESULT="$GET_BODY"
       SOURCE="cdn-hit"
-      COST_CDN_HITS=$((COST_CDN_HITS + 1))
+      COST_CACHE_HITS=$((COST_CACHE_HITS + 1))
     fi
   fi
 
@@ -235,12 +235,12 @@ while IFS= read -r FILE; do
 
     RESULT="$POST_RESULT"
     if [[ "$POST_EXIT" -eq 2 ]]; then
-      SOURCE="api-partial"
-      COST_API_PARTIAL=$((COST_API_PARTIAL + 1))
+      SOURCE="partial"
+      COST_MANIFESTS_PARTIAL=$((COST_MANIFESTS_PARTIAL + 1))
       echo "⚠️ Partial result after ${MAX_RETRIES} retries"
     else
-      SOURCE="api-scored"
-      COST_API_POSTS=$((COST_API_POSTS + 1))
+      SOURCE="scored"
+      COST_MANIFESTS_SCORED=$((COST_MANIFESTS_SCORED + 1))
       echo "📊 Scored via API"
     fi
   fi
@@ -250,7 +250,11 @@ while IFS= read -r FILE; do
   TOTAL=$(echo "$RESULT" | jq -r '.total // 0')
   PENDING=$(echo "$RESULT" | jq -r '.pending // 0')
   AVG_SCORE=$(echo "$RESULT" | jq -r '.summary.avgScore // 0')
-  COST_TOTAL_DEPS_SCORED=$((COST_TOTAL_DEPS_SCORED + SCORED))
+  # Only count deps toward quota if this manifest was actually scored (POST).
+  # Cache hits consumed 0 quota — the deps in the result are from a prior run.
+  if [[ "$SOURCE" != "cdn-hit" ]]; then
+    COST_DEPS_SCORED=$((COST_DEPS_SCORED + SCORED))
+  fi
 
   # Build dependency table
   DEP_TABLE=$(echo "$RESULT" | jq -r '
@@ -300,20 +304,20 @@ done <<< "$MANIFESTS"
 # ---------------------------------------------------------------------------
 
 COST_JSON=$(jq -nc \
-  --argjson cdn "$COST_CDN_HITS" \
-  --argjson api "$COST_API_POSTS" \
-  --argjson partial "$COST_API_PARTIAL" \
-  --argjson deps "$COST_TOTAL_DEPS_SCORED" \
-  '{cdn_hits: $cdn, api_posts: $api, api_partial: $partial, total_deps_scored: $deps}')
+  --argjson cache_hits "$COST_CACHE_HITS" \
+  --argjson manifests_scored "$COST_MANIFESTS_SCORED" \
+  --argjson manifests_partial "$COST_MANIFESTS_PARTIAL" \
+  --argjson deps_scored "$COST_DEPS_SCORED" \
+  '{cache_hits: $cache_hits, manifests_scored: $manifests_scored, manifests_partial: $manifests_partial, deps_scored: $deps_scored}')
 
-COST_REPORT="### 💰 Cost Summary
+COST_REPORT="### 📊 Quota Usage
 
-| Metric | Count |
-|--------|-------|
-| CDN cache hits (\$0) | ${COST_CDN_HITS} |
-| API calls (quota) | ${COST_API_POSTS} |
-| Partial results | ${COST_API_PARTIAL} |
-| Total deps scored | ${COST_TOTAL_DEPS_SCORED} |"
+| | Count |
+|---|---|
+| Manifests from cache | ${COST_CACHE_HITS} |
+| Manifests scored | ${COST_MANIFESTS_SCORED} |
+| Manifests incomplete | ${COST_MANIFESTS_PARTIAL} |
+| **Deps scored** (quota) | **${COST_DEPS_SCORED}** |"
 
 MARKDOWN_REPORT+=$'\n\n'"$COST_REPORT"
 
