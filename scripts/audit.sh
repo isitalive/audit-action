@@ -284,7 +284,7 @@ while IFS= read -r FILE; do
 
   FILE_REPORT="### \`$FILE\` (avg: ${AVG_SCORE}, ${SCORED}/${TOTAL} scored, ${FRESHLY_SCORED} fresh, source: ${SOURCE})
 
-| Dependency | Score | Verdict | Quota | Details |
+| Dependency | Score | Verdict | Quota used | Details |
 |-----------|-------|---------|-------|---------
 ${DEP_TABLE}
 ${PENDING_NOTE}"
@@ -323,7 +323,7 @@ COST_REPORT="### 📊 Quota Usage
 | Manifests from cache | ${COST_CACHE_HITS} |
 | Manifests scored | ${COST_MANIFESTS_SCORED} |
 | Manifests incomplete | ${COST_MANIFESTS_PARTIAL} |
-| **Deps scored** (quota) | **${COST_DEPS_SCORED}** |"
+| **Deps scored** (quota used) | **${COST_DEPS_SCORED}** |"
 
 MARKDOWN_REPORT+=$'\n\n'"$COST_REPORT"
 
