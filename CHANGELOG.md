@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.0] - 2026-03-23
+
+### Added
+
+- **Repo health badge** in PR comments — shows the repo's own IsItAlive score with a linked badge image
+- Graceful handling of missing auth — instead of hard-failing, the action now posts a helpful notice and skips the manifest
+
+### Changed
+
+- **Free for all repos** — quota tracking and usage limits removed; private repos work the same as public repos
+- PR report header simplified: `package.json — Score: 91/100 (7 dependencies)` instead of internal scoring metadata
+- Dependency table simplified: removed "Quota used" column, keeping Score, Verdict, and Details
+- Auth failure downgraded from `::error` + `exit 1` to `::notice` + `continue` — the action no longer blocks CI when OIDC is misconfigured
+
+### Removed
+
+- `cost-summary` output — quota tracking is no longer user-facing
+- "📊 Quota Usage" table from PR comments and step summary
+- Cache status indicators (🆕/💾) from dependency table — internal detail not useful to users
+- All internal quota tracking variables (`COST_CACHE_HITS`, `COST_MANIFESTS_SCORED`, etc.)
+
 ## [0.3.0] - 2026-03-22
 
 ### Changed
