@@ -204,11 +204,11 @@ while IFS= read -r FILE; do
   echo "::group::Auditing $FILE (hash: ${HASH:0:12}...)"
 
   RESULT=""
-  SOURCE=""
 
   # ── POST with hash headers for fast-path cache lookup (ADR-006) ───────
   if [[ -z "$AUTH_TOKEN" ]]; then
     echo "::notice::No API key or OIDC token found. For public repos, add 'permissions: id-token: write' to your workflow. For private repos, set the 'api-key' input."
+    MARKDOWN_REPORT+=$'\n'"### \`$FILE\` — Skipped"$'\n\n'"*No API key or OIDC token available. Add \`permissions: id-token: write\` to your workflow for public repos.*"$'\n'
     echo "::endgroup::"
     continue
   fi
@@ -238,7 +238,7 @@ while IFS= read -r FILE; do
   AVG_SCORE=$(echo "$RESULT" | jq -r '.summary.avgScore // 0')
 
   # Build dependency table
-  DEP_TABLE=$(echo "$RESULT" | jq -r '
+  DEP_TABLE=$(echo "$RESULT" | jq -r --arg api_url "$API_URL" '
     .dependencies[]
     | select(.score != null)
     | "| \(.name) | \(.score) | \(
@@ -248,9 +248,8 @@ while IFS= read -r FILE; do
         elif .score >= 20 then "🔴 critical"
         else "💀 unmaintained"
         end
-      ) | [\(.github // "—")](https://isitalive.dev/github/\(.github // "")) |"
+      ) | [\(.github // "—")](\($api_url)/github/\(.github // "")) |"
   ' 2>/dev/null || echo "| (no scored deps) | — | — | — |")
-
   # Show pending deps if any
   PENDING_NOTE=""
   if [[ "$PENDING" -gt 0 ]]; then
