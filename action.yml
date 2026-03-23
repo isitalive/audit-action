@@ -46,8 +46,6 @@ outputs:
     description: 'Markdown summary of the audit results'
   any-below-threshold:
     description: 'Whether any dependency scored below the fail threshold (true/false)'
-  cost-summary:
-    description: 'JSON cost summary: {cdn_hits, api_posts, api_partial, total_deps_scored}'
 
 runs:
   using: 'composite'

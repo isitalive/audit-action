@@ -29,12 +29,6 @@ MAX_RETRIES="${INPUT_MAX_RETRIES:-3}"
 RETRY_DELAY="${INPUT_RETRY_DELAY:-5}"
 ANY_BELOW_THRESHOLD="false"
 
-# Quota tracking (see ADR-004: billable unit = "dependency scored")
-COST_CACHE_HITS=0         # manifests served from cache (Worker KV/L1) — 0 quota
-COST_MANIFESTS_SCORED=0   # manifests that triggered scoring
-COST_MANIFESTS_PARTIAL=0  # manifests still incomplete after retries
-COST_DEPS_SCORED=0        # total deps returned with a score (cache + fresh)
-
 # ---------------------------------------------------------------------------
 # Auth — OIDC token or API key
 # ---------------------------------------------------------------------------
@@ -214,8 +208,9 @@ while IFS= read -r FILE; do
 
   # ── POST with hash headers for fast-path cache lookup (ADR-006) ───────
   if [[ -z "$AUTH_TOKEN" ]]; then
-    echo "::error::Authentication required for POST /api/manifest. Set 'api-key' input or enable OIDC with 'permissions: id-token: write'."
-    exit 1
+    echo "::notice::No API key or OIDC token found. For public repos, add 'permissions: id-token: write' to your workflow. For private repos, set the 'api-key' input."
+    echo "::endgroup::"
+    continue
   fi
 
   POST_BODY=$(jq -nc --arg format "$FORMAT" --arg content "$CONTENT" \
@@ -231,12 +226,8 @@ while IFS= read -r FILE; do
 
   RESULT="$POST_RESULT"
   if [[ "$POST_EXIT" -eq 2 ]]; then
-    SOURCE="partial"
-    COST_MANIFESTS_PARTIAL=$((COST_MANIFESTS_PARTIAL + 1))
     echo "⚠️ Partial result after ${MAX_RETRIES} retries"
   else
-    SOURCE="scored"
-    COST_MANIFESTS_SCORED=$((COST_MANIFESTS_SCORED + 1))
     echo "📊 Scored via API"
   fi
 
@@ -245,11 +236,8 @@ while IFS= read -r FILE; do
   TOTAL=$(echo "$RESULT" | jq -r '.total // 0')
   PENDING=$(echo "$RESULT" | jq -r '.pending // 0')
   AVG_SCORE=$(echo "$RESULT" | jq -r '.summary.avgScore // 0')
-  FRESHLY_SCORED=$(echo "$RESULT" | jq -r '.freshlyScored // 0')
-  # Only freshly scored deps consume quota (see ADR-004).
-  COST_DEPS_SCORED=$((COST_DEPS_SCORED + FRESHLY_SCORED))
 
-  # Build dependency table (include cache status indicator)
+  # Build dependency table
   DEP_TABLE=$(echo "$RESULT" | jq -r '
     .dependencies[]
     | select(.score != null)
@@ -260,13 +248,8 @@ while IFS= read -r FILE; do
         elif .score >= 20 then "🔴 critical"
         else "💀 unmaintained"
         end
-      ) | \(
-        if .cacheStatus == "fresh" then "🆕"
-        elif .cacheStatus == "cached" then "💾"
-        else "—"
-        end
       ) | [\(.github // "—")](https://isitalive.dev/github/\(.github // "")) |"
-  ' 2>/dev/null || echo "| (no scored deps) | — | — | — | — |")
+  ' 2>/dev/null || echo "| (no scored deps) | — | — | — |")
 
   # Show pending deps if any
   PENDING_NOTE=""
@@ -274,10 +257,10 @@ while IFS= read -r FILE; do
     PENDING_NOTE=$'\n'"*⏳ ${PENDING} dependencies still computing — results may update on next run.*"$'\n'
   fi
 
-  FILE_REPORT="### \`$FILE\` (avg: ${AVG_SCORE}, ${SCORED}/${TOTAL} scored, ${FRESHLY_SCORED} fresh, source: ${SOURCE})
+  FILE_REPORT="### \`$FILE\` — Score: ${AVG_SCORE}/100 (${SCORED} dependencies)
 
-| Dependency | Score | Verdict | Quota used | Details |
-|-----------|-------|---------|-------|---------
+| Dependency | Score | Verdict | Details |
+|-----------|-------|---------|--------|
 ${DEP_TABLE}
 ${PENDING_NOTE}"
   MARKDOWN_REPORT+=$'\n'"$FILE_REPORT"
@@ -297,27 +280,7 @@ ${PENDING_NOTE}"
   echo "::endgroup::"
 done <<< "$MANIFESTS"
 
-# ---------------------------------------------------------------------------
-# Cost summary
-# ---------------------------------------------------------------------------
 
-COST_JSON=$(jq -nc \
-  --argjson cache_hits "$COST_CACHE_HITS" \
-  --argjson manifests_scored "$COST_MANIFESTS_SCORED" \
-  --argjson manifests_partial "$COST_MANIFESTS_PARTIAL" \
-  --argjson deps_scored "$COST_DEPS_SCORED" \
-  '{cache_hits: $cache_hits, manifests_scored: $manifests_scored, manifests_partial: $manifests_partial, deps_scored: $deps_scored}')
-
-COST_REPORT="### 📊 Quota Usage
-
-| | Count |
-|---|---|
-| Manifests from cache | ${COST_CACHE_HITS} |
-| Manifests scored | ${COST_MANIFESTS_SCORED} |
-| Manifests incomplete | ${COST_MANIFESTS_PARTIAL} |
-| **Deps scored** (quota used) | **${COST_DEPS_SCORED}** |"
-
-MARKDOWN_REPORT+=$'\n\n'"$COST_REPORT"
 
 # ---------------------------------------------------------------------------
 # Post PR comment (if in a pull request context)
@@ -327,7 +290,14 @@ if [[ -n "${GITHUB_EVENT_NAME:-}" && "$GITHUB_EVENT_NAME" == "pull_request" ]]; 
   PR_NUMBER=$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH" 2>/dev/null || echo "")
 
   if [[ -n "$PR_NUMBER" && "$PR_NUMBER" != "null" ]]; then
+    # Build repo badge (links to full report on isitalive.dev)
+    REPO_BADGE=""
+    if [[ -n "${GITHUB_REPOSITORY:-}" ]]; then
+      REPO_BADGE=$'\n'"[![IsItAlive](${API_URL}/api/badge/github/${GITHUB_REPOSITORY})](${API_URL}/github/${GITHUB_REPOSITORY})"$'\n'
+    fi
+
     COMMENT_BODY="## 🔍 IsItAlive — Dependency Health Report
+${REPO_BADGE}
 ${MARKDOWN_REPORT}
 
 ---
@@ -381,7 +351,6 @@ if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
     echo "${MARKDOWN_REPORT}"
     echo "EOF"
     echo "any-below-threshold=${ANY_BELOW_THRESHOLD}"
-    echo "cost-summary=${COST_JSON}"
   } >> "$GITHUB_OUTPUT"
 fi
 
