@@ -224,6 +224,13 @@ while IFS= read -r FILE; do
     continue
   fi
 
+  # Exit code 1 = hard failure (e.g. 401 auth). Error was already logged by
+  # post_with_retry, so just propagate the failure.
+  if [[ "$POST_EXIT" -eq 1 ]]; then
+    echo "::endgroup::"
+    exit 1
+  fi
+
   RESULT="$POST_RESULT"
   if [[ "$POST_EXIT" -eq 2 ]]; then
     echo "⚠️ Partial result after ${MAX_RETRIES} retries"
