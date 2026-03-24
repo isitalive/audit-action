@@ -239,6 +239,16 @@ while IFS= read -r FILE; do
   fi
 
   # ── Parse results and build report ──────────────────────────────────
+  # Guard: verify RESULT is valid JSON before parsing (prevents cryptic
+  # jq errors if the API returns an error page or unexpected format)
+  if ! echo "$RESULT" | jq empty 2>/dev/null; then
+    echo "::error::API returned non-JSON response for $FILE"
+    echo "::error::Response (first 200 chars): ${RESULT:0:200}"
+    echo "::endgroup::"
+    EXIT_CODE=1
+    continue
+  fi
+
   SCORED=$(echo "$RESULT" | jq -r '.scored // 0')
   TOTAL=$(echo "$RESULT" | jq -r '.total // 0')
   PENDING=$(echo "$RESULT" | jq -r '.pending // 0')
